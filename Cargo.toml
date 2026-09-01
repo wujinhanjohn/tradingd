@@ -33,6 +33,7 @@ rust_decimal_macros = "1.40"
 figment = { version = "0.10", features = ["toml", "env"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
 tempfile = "3"
 # No features by default: each crate opts into exactly what it uses, so the
 # feature set stays auditable. `full` would drag in fs, net and process.

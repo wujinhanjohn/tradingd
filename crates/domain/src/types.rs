@@ -75,7 +75,7 @@ pub enum Action {
 
 // --- what the engine feeds a strategy (grows over time) ---
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BookTicker {
     pub symbol: Symbol,
     pub bid: Price,
@@ -85,7 +85,7 @@ pub struct BookTicker {
     pub event_time: Timestamp,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Trade {
     pub symbol: Symbol,
     pub price: Price,
@@ -93,7 +93,7 @@ pub struct Trade {
     pub event_time: Timestamp,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MarketEvent {
     BookTicker(BookTicker),
     Trade(Trade),

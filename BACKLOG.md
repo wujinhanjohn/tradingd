@@ -51,3 +51,35 @@ Actual direction, which later milestones should preserve:
 - `engine` -> `{domain, settings}`
 - `bot` is the only crate that names a concrete strategy, and injects it as
   `Box<dyn domain::Strategy>`
+
+## Gap detection is per-stream by sequence SEMANTICS - correction to the M2 spec
+
+The M2 spec says to "flag non-contiguous jumps" in the per-stream update/sequence
+id, as though one rule covered every stream.
+It does not, and implementing it that way would have made gap alerting useless.
+
+Confirmed against the Binance spot WebSocket docs during milestone 2:
+
+- `@trade` carries `t`, the per-symbol trade id.
+  It increments by exactly **one** per trade, so a jump is a real gap and the
+  number of missed messages is countable.
+  This is `SeqPolicy::Contiguous`.
+- `@bookTicker` carries `u`, the **order book updateId**.
+  It is monotonic but *not* contiguous: it counts book updates, not pushed
+  messages, so it jumps by arbitrary amounts as a matter of course.
+  This is `SeqPolicy::Monotonic`, and only a repeat, a decrease, or an
+  outage-spanning jump is evidence of anything.
+
+Treating `u` as contiguous would fire a gap alert on nearly every message, which
+is worse than no alerting at all - it trains an operator to ignore the one signal
+that says data is missing.
+
+`exchange::SeqPolicy` carries this per stream kind, and it is recorded in every
+gap marker so a replay reconstructs gaps under the semantics that actually
+applied rather than re-deriving them under a single wrong rule.
+
+**This must hold through the connection layer (stage 4) and into replay.**
+A monotonic-stream marker and a contiguous-stream marker are not interchangeable.
+Any later stream kind added to `StreamKind` has to declare its policy, and the
+`e.g. bookTicker's update id, trade id` phrasing in the M2 spec should not be read
+as saying the two behave alike.

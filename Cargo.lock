@@ -299,6 +299,13 @@ dependencies = [
 [[package]]
 name = "exchange"
 version = "0.1.0"
+dependencies = [
+ "domain",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "fastrand"

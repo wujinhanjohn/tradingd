@@ -1,0 +1,4 @@
+# Project invariant: Decimal, never float. Prices, quantities and money must use
+# rust_decimal::Decimal. Binary floating point is banned outright so a stray f64
+# can never get near an order.
+disallowed-types = ["f32", "f64"]

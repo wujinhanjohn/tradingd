@@ -1,0 +1,12 @@
+[package]
+name = "backtest"
+description = "Replay harness. Placeholder in milestone 1 - deliberately empty."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

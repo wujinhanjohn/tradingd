@@ -1,0 +1,26 @@
+[package]
+name = "bot"
+description = "The trading bot binary: parse args, wire the crates together, run the engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { workspace = true }
+engine = { workspace = true }
+settings = { workspace = true }
+# The only crate in the workspace that names a concrete strategy.
+strategy = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+# The binary picks the runtime flavour; libraries do not.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

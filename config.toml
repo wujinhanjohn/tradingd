@@ -1,0 +1,15 @@
+# Sample TESTNET configuration. Checked in on purpose - it contains NO secrets.
+# Credentials live only in the environment (see .env.example).
+#
+# Any field here can be overridden by an APP_-prefixed environment variable,
+# using a double underscore for nesting: APP_LOGGING__LEVEL=debug
+environment = "testnet"
+
+[binance]
+spot_rest_url  = "https://testnet.binance.vision"
+spot_ws_url    = "wss://stream.testnet.binance.vision/ws"
+recv_window_ms = 5000
+
+[logging]
+level = "info"
+json  = false

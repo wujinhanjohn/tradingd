@@ -1,0 +1,19 @@
+[package]
+name = "domain"
+description = "Pure trading domain types and the Strategy seam. No I/O, no async, no exchange."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Deliberately minimal. This crate must stay free of tokio/reqwest/hyper so that
+# both the live engine and the backtest harness can depend on it.
+[dependencies]
+rust_decimal = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rust_decimal_macros = { workspace = true }
+
+[lints]
+workspace = true

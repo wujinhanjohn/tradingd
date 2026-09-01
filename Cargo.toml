@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "bin/bot",
+    "crates/backtest",
+    "crates/domain",
+    "crates/engine",
+    "crates/exchange",
+    "crates/settings",
+    "crates/strategy",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+# --- internal ---
+backtest = { path = "crates/backtest" }
+domain = { path = "crates/domain" }
+exchange = { path = "crates/exchange" }
+engine = { path = "crates/engine" }
+settings = { path = "crates/settings" }
+strategy = { path = "crates/strategy" }
+
+# --- external ---
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rust_decimal = { version = "1.42", default-features = false, features = ["std"] }
+rust_decimal_macros = "1.40"
+figment = { version = "0.10", features = ["toml", "env"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+tempfile = "3"
+# No features by default: each crate opts into exactly what it uses, so the
+# feature set stays auditable. `full` would drag in fs, net and process.
+tokio = { version = "1", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# The no-float invariant, enforced mechanically rather than by convention.
+# See clippy.toml for the banned types themselves.
+disallowed_types = "deny"
+float_arithmetic = "deny"
+
+[profile.release]
+debug = 1

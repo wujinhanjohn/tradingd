@@ -1,0 +1,18 @@
+[package]
+name = "strategy"
+description = "Strategy implementations. Milestone 1 ships only the no-op stub."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { workspace = true }
+
+[dev-dependencies]
+# `dec!` expands to a `rust_decimal::` path, so the crate must be nameable here.
+rust_decimal = { workspace = true }
+rust_decimal_macros = { workspace = true }
+
+[lints]
+workspace = true

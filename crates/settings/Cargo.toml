@@ -1,0 +1,20 @@
+[package]
+name = "settings"
+description = "Configuration and credential loading. Config is public and loggable; credentials are not."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+figment = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+secrecy = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

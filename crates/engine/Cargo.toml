@@ -1,0 +1,27 @@
+[package]
+name = "engine"
+description = "Runtime orchestrator: logging, the environment guard, and the run loop."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { workspace = true }
+settings = { workspace = true }
+
+thiserror = { workspace = true }
+# `macros` for select!, `signal` for ctrl_c, `time` for the heartbeat interval.
+# The runtime flavour is the binary's choice, so no `rt-*` here.
+tokio = { workspace = true, features = ["macros", "signal", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+# `test-util` gives paused virtual time, so heartbeat tests are deterministic
+# and instant rather than sleeping in real seconds.
+tokio = { workspace = true, features = ["rt", "test-util"] }
+secrecy = { workspace = true }
+
+[lints]
+workspace = true

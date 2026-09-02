@@ -7,8 +7,30 @@ environment = "testnet"
 
 [binance]
 spot_rest_url  = "https://testnet.binance.vision"
-spot_ws_url    = "wss://stream.testnet.binance.vision/ws"
+# The COMBINED-stream endpoint (`/stream`), not the raw one (`/ws`).
+#
+# Confirmed against the current Binance spot docs: wrapping is a property of the
+# path. `/ws` delivers payloads unwrapped, so on a connection carrying more than
+# one stream nothing in a frame says which stream it came from - and bookTicker
+# payloads carry no `"e"` event type to infer it from either. `/stream` wraps
+# every payload as {"stream":"<name>","data":{...}}, which is what normalization,
+# gap detection, and the recording all treat as ground truth.
+spot_ws_url    = "wss://stream.testnet.binance.vision/stream"
 recv_window_ms = 5000
+
+[market]
+symbols       = ["BTCUSDT"]
+streams       = ["book_ticker", "trade"]
+# A liquid pair ticks several times a second, so ten seconds of silence on a
+# subscribed stream is already well past anomalous.
+staleness_ms  = 10000
+
+[recording]
+# Raw inbound payloads plus ingest metadata, as newline-delimited JSON. Enabled
+# by default: capturing the stream is the point of this milestone, and an
+# unwritable directory refuses to start rather than running unrecorded.
+enabled = true
+dir     = "recordings"
 
 [logging]
 level = "info"

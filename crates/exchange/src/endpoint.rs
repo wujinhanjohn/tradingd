@@ -54,11 +54,18 @@ pub const PRODUCTION_HOSTS: &[&str] = &[
 
 /// The canonical testnet spot market-stream URL. This is what a testnet config
 /// should say.
-pub const TESTNET_SPOT_WS_URL: &str = "wss://stream.testnet.binance.vision/ws";
+///
+/// `/stream`, the **combined** endpoint, not `/ws`. Only the combined endpoint
+/// wraps each payload as `{"stream":..,"data":..}`, and that name is what
+/// [`crate::normalize`] cross-checks the payload against, what [`crate::gap`]
+/// keys on, and what makes a recording replayable. Classification itself keys on
+/// the host, so the path here is a statement about which endpoint to *use*, not
+/// part of what makes a URL testnet.
+pub const TESTNET_SPOT_WS_URL: &str = "wss://stream.testnet.binance.vision/stream";
 
 /// The canonical production spot market-stream URL, recorded so the classifier
 /// has something to be tested against. Nothing in this milestone connects to it.
-pub const PRODUCTION_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/ws";
+pub const PRODUCTION_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/stream";
 
 /// Loopback authorities, which by construction cannot be an exchange.
 ///
@@ -320,6 +327,44 @@ mod tests {
             "wss://stream.binance.com#frag",
         ] {
             assert_eq!(classify(url), Some(EndpointClass::Production), "{url}");
+        }
+    }
+
+    #[test]
+    fn the_combined_stream_path_classifies_exactly_as_the_raw_one_does() {
+        // Milestone 2 moved the shipped config from `/ws` to `/stream`, because
+        // only the combined endpoint names the stream each payload belongs to.
+        // Classification keys on the *host*, so that move must be invisible
+        // here - including for the two mismatch directions, which are the
+        // reason this module exists.
+        for host in TESTNET_HOSTS {
+            for path in ["/ws", "/stream", "/stream?streams=btcusdt@trade"] {
+                let url = format!("wss://{host}{path}");
+                assert_eq!(classify(&url), Some(EndpointClass::Testnet), "{url}");
+                assert_eq!(require_class(EndpointClass::Testnet, &url), Ok(()), "{url}");
+                assert!(
+                    matches!(
+                        require_class(EndpointClass::Production, &url),
+                        Err(EndpointError::Mismatch { .. })
+                    ),
+                    "{url} must still refuse under a production label"
+                );
+            }
+        }
+
+        for host in PRODUCTION_HOSTS {
+            for path in ["/ws", "/stream", "/stream?streams=btcusdt@trade"] {
+                let url = format!("wss://{host}{path}");
+                assert_eq!(classify(&url), Some(EndpointClass::Production), "{url}");
+                // The direction that must never regress, path or no path.
+                assert!(
+                    matches!(
+                        require_class(EndpointClass::Testnet, &url),
+                        Err(EndpointError::Mismatch { .. })
+                    ),
+                    "{url} must refuse under a testnet label"
+                );
+            }
         }
     }
 

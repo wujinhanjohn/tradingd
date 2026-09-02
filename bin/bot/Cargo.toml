@@ -10,7 +10,9 @@ license.workspace = true
 domain = { workspace = true }
 engine = { workspace = true }
 settings = { workspace = true }
-# The only crate in the workspace that names a concrete strategy.
+# The only crate in the workspace that names a concrete strategy - and, from
+# milestone 2, a concrete market source. `engine` depends on neither.
+exchange = { workspace = true }
 strategy = { workspace = true }
 
 anyhow = { workspace = true }
@@ -21,6 +23,13 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The end-to-end tests point the real binary at a local fake WebSocket server
+# rather than at the live testnet, so `cargo test` never touches the network.
+futures-util = { workspace = true }
+tokio-tungstenite = { workspace = true }
+# `net`/`time` for the fake feed's listener and pacing; `rt` for the thread it
+# runs on. The binary itself needs none of these.
+tokio = { workspace = true, features = ["net", "rt", "time"] }
 
 [lints]
 workspace = true

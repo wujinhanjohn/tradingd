@@ -11,9 +11,11 @@ domain = { workspace = true }
 settings = { workspace = true }
 
 thiserror = { workspace = true }
-# `macros` for select!, `signal` for ctrl_c, `time` for the heartbeat interval.
-# The runtime flavour is the binary's choice, so no `rt-*` here.
-tokio = { workspace = true, features = ["macros", "signal", "time"] }
+# `macros` for select!, `signal` for ctrl_c, `time` for the heartbeat interval,
+# `sync` for the market-data channel. The runtime flavour is the binary's choice,
+# so no `rt-*` here - and note there is no `exchange` dependency: the engine sees
+# a channel of `domain::IngestMsg` and never a concrete market source.
+tokio = { workspace = true, features = ["macros", "signal", "sync", "time"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

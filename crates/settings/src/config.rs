@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use figment::{
     providers::{Env as EnvProvider, Format, Toml},
@@ -20,6 +20,30 @@ pub const ENV_NESTED_SEPARATOR: &str = "__";
 /// by the exchange, so we refuse it here instead of at first request.
 const MAX_RECV_WINDOW_MS: u64 = 60_000;
 
+/// The narrowest staleness bound we will accept.
+///
+/// Below this, ordinary scheduling jitter on a loaded machine reads as a dead
+/// feed, and an alert that cries wolf is worse than no alert at all.
+const MIN_STALENESS_MS: u64 = 100;
+
+/// The widest staleness bound we will accept.
+///
+/// A liquid pair like BTCUSDT ticks several times a second, so five minutes of
+/// silence is already far past anything that could be called healthy. A bound
+/// looser than this is not a bound.
+const MAX_STALENESS_MS: u64 = 300_000;
+
+/// Loopback authorities, for which a plaintext `ws://` market URL is accepted.
+///
+/// This exists so the end-to-end tests can point the *real binary* at a local
+/// fake WebSocket server instead of at the live exchange. It is not a security
+/// boundary and is not relied on as one: `exchange::require_class` is the gate,
+/// and it re-parses the URL with a deliberately pedantic authority parser that
+/// refuses userinfo, percent-encoding, backslashes, and anything else that could
+/// make two parsers disagree about where the host ends. The check here only
+/// turns a plainly wrong URL into a readable error at load time.
+const LOOPBACK_PREFIXES: &[&str] = &["ws://127.0.0.1:", "ws://localhost:", "ws://[::1]:"];
+
 /// Non-secret runtime configuration. Safe to log in full - by construction there
 /// is nowhere in here for a credential to hide.
 #[derive(Clone, Debug, Deserialize)]
@@ -27,6 +51,8 @@ const MAX_RECV_WINDOW_MS: u64 = 60_000;
 pub struct Config {
     pub environment: Env,
     pub binance: BinanceConfig,
+    pub market: MarketConfig,
+    pub recording: RecordingConfig,
     pub logging: LoggingConfig,
 }
 
@@ -47,6 +73,54 @@ pub struct BinanceConfig {
     pub spot_rest_url: String,
     pub spot_ws_url: String,
     pub recv_window_ms: u64,
+}
+
+/// What market data to subscribe to, and when silence counts as a fault.
+///
+/// `symbols` are held as strings here and validated through
+/// [`domain::Symbol::new`], because `domain` carries no `serde` and is not going
+/// to start: it depends on `rust_decimal` and `thiserror` and nothing else. The
+/// validation still happens at load time, so a bad symbol refuses to start
+/// rather than surfacing at the first subscribe.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarketConfig {
+    /// Trading pairs, uppercase, e.g. `["BTCUSDT"]`. Non-empty, no duplicates.
+    pub symbols: Vec<String>,
+    /// Which streams to subscribe to for each symbol. Non-empty, no duplicates.
+    pub streams: Vec<StreamKind>,
+    /// Silence on a subscribed stream longer than this is reported as stale.
+    pub staleness_ms: u64,
+}
+
+/// A market stream this build can subscribe to.
+///
+/// Spelled in our own snake_case rather than Binance's `bookTicker`, because
+/// this is our configuration namespace and the exchange's wire spelling is the
+/// adapter's business. `bot` maps this to `exchange::StreamKind` in one `match`,
+/// the same way it maps [`Env`] to `exchange::EndpointClass` - which is what
+/// keeps `settings` from depending on `exchange`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum StreamKind {
+    /// Best bid and ask, pushed on every book change.
+    BookTicker,
+    /// Individual trades.
+    Trade,
+}
+
+/// Whether to write a session recording, and where.
+///
+/// Enabling this is fail-closed downstream: if the directory cannot be prepared,
+/// the market source refuses to start rather than running unrecorded. Believing
+/// a session was captured when it was not is the one failure that leaves nothing
+/// behind to notice it by.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordingConfig {
+    pub enabled: bool,
+    /// Directory for session files. Created if absent.
+    pub dir: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -75,6 +149,50 @@ impl Env {
 impl fmt::Display for Env {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+impl StreamKind {
+    /// The name used in configuration and in logs.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BookTicker => "book_ticker",
+            Self::Trade => "trade",
+        }
+    }
+}
+
+impl fmt::Display for StreamKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl MarketConfig {
+    /// The configured symbols, as validated domain values.
+    ///
+    /// Fallible rather than unwrapping behind a "validation already proved this"
+    /// comment: a `Config` built by hand in a test has not been through
+    /// [`load`], and a latent panic on that path is worth avoiding for the cost
+    /// of one `?` at the single call site in `bot`.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidValue`] naming the first symbol `domain` will not vouch
+    /// for. After a successful [`load`] this cannot fail.
+    pub fn symbols(&self) -> Result<Vec<domain::Symbol>, Error> {
+        self.symbols
+            .iter()
+            .map(|raw| {
+                domain::Symbol::new(raw).map_err(|source| Error::InvalidValue {
+                    field: "market.symbols",
+                    reason: format!(
+                        "{source}. Symbols are uppercase ASCII alphanumeric, e.g. \"BTCUSDT\""
+                    ),
+                })
+            })
+            .collect()
     }
 }
 
@@ -126,7 +244,7 @@ impl Config {
             &self.binance.spot_rest_url,
             "https://",
         )?;
-        require_scheme("binance.spot_ws_url", &self.binance.spot_ws_url, "wss://")?;
+        require_ws_scheme("binance.spot_ws_url", &self.binance.spot_ws_url)?;
 
         if self.binance.recv_window_ms == 0 || self.binance.recv_window_ms > MAX_RECV_WINDOW_MS {
             return Err(Error::InvalidValue {
@@ -135,6 +253,28 @@ impl Config {
                     "must be between 1 and {MAX_RECV_WINDOW_MS}, got {}",
                     self.binance.recv_window_ms
                 ),
+            });
+        }
+
+        // Proves every symbol parses, at load time rather than at first subscribe.
+        let _ = self.market.symbols()?;
+        require_non_empty_unique("market.symbols", &self.market.symbols)?;
+        require_non_empty_unique("market.streams", &self.market.streams)?;
+
+        if !(MIN_STALENESS_MS..=MAX_STALENESS_MS).contains(&self.market.staleness_ms) {
+            return Err(Error::InvalidValue {
+                field: "market.staleness_ms",
+                reason: format!(
+                    "must be between {MIN_STALENESS_MS} and {MAX_STALENESS_MS}, got {}",
+                    self.market.staleness_ms
+                ),
+            });
+        }
+
+        if self.recording.enabled && self.recording.dir.as_os_str().is_empty() {
+            return Err(Error::InvalidValue {
+                field: "recording.dir",
+                reason: "must name a directory when recording is enabled".to_owned(),
             });
         }
 
@@ -147,6 +287,51 @@ impl Config {
 
         Ok(())
     }
+}
+
+/// Reject an empty or duplicate-bearing list.
+///
+/// A duplicate is refused rather than deduplicated: a stream subscribed twice
+/// would be tracked once and counted twice, and silently "fixing" the config
+/// leaves the operator believing they configured something they did not.
+fn require_non_empty_unique<T>(field: &'static str, values: &[T]) -> Result<(), Error>
+where
+    T: PartialEq + fmt::Debug,
+{
+    if values.is_empty() {
+        return Err(Error::InvalidValue {
+            field,
+            reason: "must not be empty".to_owned(),
+        });
+    }
+
+    for (index, value) in values.iter().enumerate() {
+        if values[..index].contains(value) {
+            return Err(Error::InvalidValue {
+                field,
+                reason: format!("{value:?} appears more than once"),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// The market WebSocket URL must be `wss://`, or a plaintext loopback address.
+///
+/// See [`LOOPBACK_PREFIXES`] for why that second case exists and why it is not
+/// load-bearing for safety.
+fn require_ws_scheme(field: &'static str, value: &str) -> Result<(), Error> {
+    if value.starts_with("wss://") || LOOPBACK_PREFIXES.iter().any(|p| value.starts_with(p)) {
+        return Ok(());
+    }
+    Err(Error::InvalidValue {
+        field,
+        reason: format!(
+            "must start with `wss://` (or `ws://` on a loopback address, for local \
+             end-to-end tests), got `{value}`"
+        ),
+    })
 }
 
 fn require_scheme(field: &'static str, value: &str, scheme: &str) -> Result<(), Error> {

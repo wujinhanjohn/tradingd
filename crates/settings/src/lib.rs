@@ -17,7 +17,8 @@ mod credentials;
 mod error;
 
 pub use config::{
-    load, BinanceConfig, Config, Env, LoggingConfig, ENV_NESTED_SEPARATOR, ENV_PREFIX,
+    load, BinanceConfig, Config, Env, LoggingConfig, MarketConfig, RecordingConfig, StreamKind,
+    ENV_NESTED_SEPARATOR, ENV_PREFIX,
 };
 pub use credentials::{
     load_credentials, production_confirmed, Credentials, API_KEY_VAR, API_SECRET_VAR,

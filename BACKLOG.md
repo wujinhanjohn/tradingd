@@ -83,3 +83,72 @@ A monotonic-stream marker and a contiguous-stream marker are not interchangeable
 Any later stream kind added to `StreamKind` has to declare its policy, and the
 `e.g. bookTicker's update id, trade id` phrasing in the M2 spec should not be read
 as saying the two behave alike.
+
+## Staleness is deliberately NOT a recorded marker - do not "fix" this
+
+`IngestMsg::Stale` is emitted on the channel and logged, but nothing is written
+to the recording, and `record::MarkerKind` deliberately stays `gap` /
+`disconnect` / `reconnect`.
+
+This looks like an omission and is not one.
+A gap depends on the sequence policy that applied *at capture time*, which a
+reader cannot re-derive - that is why `GapDetail` carries `SeqPolicy` into every
+marker.
+Staleness has no such hidden input: it is a pure function of the recording's
+`recv_ns` timeline and the configured `staleness_ms`, both of which a replay
+already has.
+Recording it would store a derived value alongside the inputs it was derived
+from, so a later change to the bound would leave the archive asserting staleness
+episodes that the current configuration disagrees with.
+
+If a future milestone genuinely needs stale markers - say, because the bound
+becomes dynamic and is no longer recoverable from configuration - then the bound
+in force must be recorded too, not just the verdict.
+
+## `tokio-tungstenite` is pinned at 0.29, not 0.30 - MSRV, not inertia
+
+0.30 requires rustc 1.85; the workspace holds `rust-version = "1.82"`, set in
+milestone 1.
+`cargo add` will silently pick 0.29 because of that, which is easy to mistake for
+an out-of-date pin.
+
+The ping/pong semantics are identical between the two, so nothing in the
+connection layer depends on the choice.
+
+Revisit when the toolchain for CI and the AWS image is actually chosen: if that
+lands on 1.85+, raise `rust-version` and the dependency together, in one commit,
+so the reason stays legible.
+
+## The offline suite cannot fully exercise TLS - and that hid a panic
+
+Found during the milestone-2 manual end-to-end run, not by `cargo test`.
+
+Every socket test in this workspace runs against a local fake server over
+plaintext `ws://`, which is right - it keeps the suite offline and
+deterministic - but it means the first real `wss://` handshake in this project's
+life happened against the live testnet.
+It panicked: rustls 0.23 resolves its crypto provider from crate features and
+*panics* inside the handshake if it cannot determine exactly one, and
+`tokio-tungstenite`'s `rustls-tls-webpki-roots` feature does not select a
+provider backend.
+
+Fixed by depending on `rustls` directly with the `ring` feature, and by
+installing that provider explicitly in `exchange::binance` so the choice is
+legible in code and survives a future dependency enabling a second backend.
+`crates/exchange/tests/connection.rs` now drives a real `wss://` connect against
+a plain TCP listener, which walks the whole TLS setup path and asserts a typed
+error rather than a panic.
+
+What is *still* not covered offline: certificate verification, the webpki root
+store, and anything past the ClientHello.
+Covering it would mean a TLS fake server with a generated CA - real work, and
+worth doing before anything depends on TLS behaviour rather than merely on TLS
+existing.
+Until then, the manual end-to-end run against testnet is the only thing that
+exercises it, and that should be stated whenever the suite is described as
+covering the connection layer.
+
+Worth remembering more generally: the fail-closed seam behaved correctly through
+this. The source task panicked, the channel closed, the engine logged the dead
+feed as critical and stopped cleanly, and `bot` exited non-zero carrying the real
+reason. The bug was found in seconds rather than presenting as a hang.

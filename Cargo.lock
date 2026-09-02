@@ -162,10 +162,13 @@ dependencies = [
  "clap",
  "domain",
  "engine",
+ "exchange",
+ "futures-util",
  "settings",
  "strategy",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tracing",
 ]
 
@@ -1024,6 +1027,7 @@ dependencies = [
 name = "settings"
 version = "0.1.0"
 dependencies = [
+ "domain",
  "figment",
  "secrecy",
  "serde",

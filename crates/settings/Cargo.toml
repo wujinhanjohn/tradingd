@@ -7,6 +7,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# For `Symbol::new`: configured symbols are validated at load time through the
+# same constructor the rest of the system uses, rather than by a second, drifting
+# copy of the rule.
+domain = { workspace = true }
+
 figment = { workspace = true }
 secrecy = { workspace = true }
 serde = { workspace = true }

@@ -6,8 +6,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use engine::Error;
 use settings::{
-    BinanceConfig, Config, Env, LoggingConfig, PRODUCTION_CONFIRMATION_VALUE,
-    PRODUCTION_CONFIRMATION_VAR,
+    BinanceConfig, Config, Env, LoggingConfig, MarketConfig, RecordingConfig, StreamKind,
+    PRODUCTION_CONFIRMATION_VALUE, PRODUCTION_CONFIRMATION_VAR,
 };
 
 fn env_lock() -> MutexGuard<'static, ()> {
@@ -47,8 +47,17 @@ fn config(environment: Env) -> Config {
         environment,
         binance: BinanceConfig {
             spot_rest_url: "https://testnet.binance.vision".to_owned(),
-            spot_ws_url: "wss://stream.testnet.binance.vision/ws".to_owned(),
+            spot_ws_url: "wss://stream.testnet.binance.vision/stream".to_owned(),
             recv_window_ms: 5000,
+        },
+        market: MarketConfig {
+            symbols: vec!["BTCUSDT".to_owned()],
+            streams: vec![StreamKind::BookTicker, StreamKind::Trade],
+            staleness_ms: 10_000,
+        },
+        recording: RecordingConfig {
+            enabled: false,
+            dir: "recordings".into(),
         },
         logging: LoggingConfig {
             level: "info".to_owned(),

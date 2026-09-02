@@ -11,9 +11,20 @@ license.workspace = true
 [dependencies]
 domain = { workspace = true }
 
+futures-util = { workspace = true }
+# Only for installing the TLS crypto provider - see `binance::install_crypto_provider`.
+# No rustls types appear in this crate's own API.
+rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# `time` for backoff/staleness deadlines, `sync` for the channel to the engine,
+# `macros` for the read loop's `select!`. The runtime flavour is the binary's
+# choice, so no `rt-*` here; `net` arrives transitively via tokio-tungstenite,
+# which needs a TcpStream to wrap.
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tokio-tungstenite = { workspace = true }
+tracing = { workspace = true }
 
 [lints]
 workspace = true
@@ -21,3 +32,9 @@ workspace = true
 [dev-dependencies]
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# The fake WebSocket server the connection tests run against: a real server on
+# 127.0.0.1:0, so the tests drive the real constructor and the real socket code
+# without ever touching the live testnet.
+tokio = { workspace = true, features = ["io-util", "net", "rt", "test-util"] }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }

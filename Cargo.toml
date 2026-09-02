@@ -31,6 +31,13 @@ clap = { version = "4", features = ["derive"] }
 rust_decimal = { version = "1.42", default-features = false, features = ["std"] }
 rust_decimal_macros = "1.40"
 figment = { version = "0.10", features = ["toml", "env"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+# The TLS crypto backend, named explicitly rather than left to feature
+# unification. rustls 0.23 refuses to guess a provider and *panics* at handshake
+# time if it cannot determine one; see `exchange::binance::install_crypto_provider`.
+# `ring` over `aws-lc-rs` because it builds without cmake or a C toolchain, which
+# matters for a slim container image later.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
@@ -38,6 +45,14 @@ tempfile = "3"
 # No features by default: each crate opts into exactly what it uses, so the
 # feature set stays auditable. `full` would drag in fs, net and process.
 tokio = { version = "1", default-features = false }
+# WebSocket only. `rustls-tls-webpki-roots` bundles the trust anchors rather
+# than reading the OS store, so a container image needs no CA package - and
+# `rustls` is the only TLS that enters the tree. Still no HTTP client.
+tokio-tungstenite = { version = "0.29", default-features = false, features = [
+    "connect",
+    "handshake",
+    "rustls-tls-webpki-roots",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = "2.0"

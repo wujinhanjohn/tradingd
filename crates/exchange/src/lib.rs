@@ -11,11 +11,18 @@
 //! is expressed in this crate's own [`EndpointClass`] and `bot` does the one-line
 //! mapping from `settings::Env`.
 
+mod backoff;
+mod binance;
 mod endpoint;
 mod gap;
 mod normalize;
 mod record;
+mod source;
+mod subscription;
+mod wire;
 
+pub use backoff::{Backoff, BackoffError, Jitter};
+pub use binance::ConnectError;
 pub use endpoint::{
     classify, is_loopback, require_class, EndpointClass, EndpointError, PRODUCTION_HOSTS,
     PRODUCTION_SPOT_WS_URL, TESTNET_HOSTS, TESTNET_SPOT_WS_URL,
@@ -30,3 +37,6 @@ pub use record::{
     MarkerKind, MarkerRecord, ReconnectDetail, Record, RecordError, RecordReader, Recorder,
     RecorderConfig, EXTENSION, FORMAT, FORMAT_VERSION,
 };
+pub use source::{BinanceMarketSource, Clock, SourceConfig, SourceError, SystemClock};
+pub use subscription::{StreamSet, StreamTracker, Subscription, SubscriptionError, TrackError};
+pub use wire::{parse_frame, subscribe_request, Frame, WireError};

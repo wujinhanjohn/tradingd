@@ -14,10 +14,12 @@
 pub use rust_decimal::Decimal;
 
 mod error;
+mod ingest;
 mod strategy;
 mod types;
 
 pub use error::DomainError;
+pub use ingest::IngestMsg;
 pub use strategy::{Strategy, StrategyCtx};
 pub use types::{
     Action, BookTicker, ClientOrderId, Fill, MarketEvent, OrderIntent, OrderKind, Price, Qty, Side,

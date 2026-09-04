@@ -2,3 +2,7 @@
 .env
 .DS_Store
 /recordings
+
+# Local-only agent/planning docs
+/CLAUDE.md
+/milestone-*.md

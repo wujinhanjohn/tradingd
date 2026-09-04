@@ -224,6 +224,10 @@ fn consecutive_trades_carry_consecutive_ids() {
 fn every_fixture_normalizes_and_does_so_identically_every_time() {
     // Sweeps the directory rather than a hand-written list, so a fixture added
     // later cannot sit unexercised. Also re-asserts purity across all of them.
+    //
+    // Only the top level: captured stream frames live here, and the
+    // `exchangeInfo` captures - a different payload shape entirely, for a
+    // different parse - live in `fixtures/exchange_info/`.
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
     let mut checked = 0;
 

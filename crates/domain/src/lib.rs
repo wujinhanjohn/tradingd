@@ -14,12 +14,16 @@
 pub use rust_decimal::Decimal;
 
 mod error;
+mod filters;
 mod ingest;
+mod quantize;
 mod strategy;
 mod types;
 
 pub use error::DomainError;
+pub use filters::{SymbolFilterError, SymbolFilterSpec, SymbolFilters};
 pub use ingest::IngestMsg;
+pub use quantize::{quantize, QuantizeReject, QuantizedOrder};
 pub use strategy::{Strategy, StrategyCtx};
 pub use types::{
     Action, BookTicker, ClientOrderId, Fill, MarketEvent, OrderIntent, OrderKind, Price, Qty, Side,

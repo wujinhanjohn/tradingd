@@ -1,10 +1,13 @@
-//! The Binance adapter: market-data ingest, normalization, and recording.
+//! The Binance adapter: market-data ingest, normalization, recording, and the
+//! symbol filters an order has to satisfy.
 //!
-//! Milestone 2 is **read-only**. There is no signing, no order placement, and no
-//! HTTP client - public market streams are unauthenticated WebSocket, and that
-//! is all this crate reaches for. `reqwest`/`hyper`/`ureq` are deliberately
-//! absent from the workspace; TLS arrives only as `rustls`, transitively, because
-//! `wss://` requires it.
+//! Still **read-only**. There is no signing and no order placement: public
+//! market streams are unauthenticated WebSocket, and `exchangeInfo` is an
+//! unauthenticated GET. Milestone 3 retired the "no HTTP client" property and
+//! replaced it with a stricter one - there is exactly **one** HTTP client
+//! (`ureq`, on rustls with the `ring` provider), it is [`RestClient`], and every
+//! request goes through it. `reqwest`/`hyper`/`native-tls`/`aws-lc-rs` stay out
+//! of the workspace entirely.
 //!
 //! Dependency direction: `exchange -> domain` plus external crates. It does
 //! **not** depend on `settings`, so the environment cross-check in [`require_class`]
@@ -13,20 +16,26 @@
 
 mod backoff;
 mod binance;
+mod book;
 mod endpoint;
+mod filters;
 mod gap;
 mod normalize;
 mod record;
+mod rest;
 mod source;
 mod subscription;
 mod wire;
 
 pub use backoff::{Backoff, BackoffError, Jitter};
 pub use binance::ConnectError;
+pub use book::{FilterBook, FilterStale};
 pub use endpoint::{
-    classify, is_loopback, require_class, EndpointClass, EndpointError, PRODUCTION_HOSTS,
-    PRODUCTION_SPOT_WS_URL, TESTNET_HOSTS, TESTNET_SPOT_WS_URL,
+    classify, classify_for, is_loopback, is_loopback_for, require_class, require_class_for,
+    EndpointClass, EndpointError, Protocol, PRODUCTION_HOSTS, PRODUCTION_SPOT_REST_URL,
+    PRODUCTION_SPOT_WS_URL, TESTNET_HOSTS, TESTNET_SPOT_REST_URL, TESTNET_SPOT_WS_URL,
 };
+pub use filters::{parse_exchange_info, FilterParseError, LotSize, SymbolInfo, STATUS_TRADING};
 pub use gap::{GapDetail, GapKind, SeqTracker};
 pub use normalize::{
     ingest_ms, normalize, parse_stream, NormalizeError, Normalized, Seq, SeqPolicy, StreamId,
@@ -37,6 +46,7 @@ pub use record::{
     MarkerKind, MarkerRecord, ReconnectDetail, Record, RecordError, RecordReader, Recorder,
     RecorderConfig, EXTENSION, FORMAT, FORMAT_VERSION,
 };
+pub use rest::{ExchangeInfo, FilterRefresher, RestClient, RestError};
 pub use source::{BinanceMarketSource, Clock, SourceConfig, SourceError, SystemClock};
 pub use subscription::{StreamSet, StreamTracker, Subscription, SubscriptionError, TrackError};
 pub use wire::{parse_frame, subscribe_request, Frame, WireError};

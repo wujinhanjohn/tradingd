@@ -1,4 +1,4 @@
-//! Canonical Binance WebSocket hosts, and the structural check that stops a
+//! Canonical Binance hosts, and the structural check that stops a
 //! testnet-labelled configuration from ever reaching a production host.
 //!
 //! This is the milestone-1 backlog item ("environment and endpoint are not
@@ -6,10 +6,11 @@
 //! hostname is the real exchange is Binance-specific knowledge, and it belongs
 //! here.
 //!
-//! The check is *structural*: `BinanceMarketSource::connect` (stage 4) takes the
-//! expected [`EndpointClass`] and calls [`require_class`] before it opens a
-//! socket, so a source aimed at the wrong environment cannot be constructed at
-//! all. There is no "warn and continue" path.
+//! The check is *structural*: `BinanceMarketSource::connect` takes the expected
+//! [`EndpointClass`] and calls [`require_class`] before it opens a socket, and
+//! `RestClient::new` calls [`require_class_for`] before it can issue a request,
+//! so a client aimed at the wrong environment cannot be constructed at all.
+//! There is no "warn and continue" path.
 //!
 //! Matching is **exact, on the host, and case-insensitive ASCII only**. It is
 //! never a suffix or substring test. `data-stream.binance.vision` is the reason
@@ -17,8 +18,23 @@
 //! live production market data, so a `ends_with("binance.vision")` shortcut
 //! would classify the live feed as testnet. Anything not on a list below is
 //! unrecognised, and unrecognised fails closed.
+//!
+//! # Two protocols, one parser
+//!
+//! Milestone 3 added the first REST call. A REST base URL is another endpoint
+//! and goes through *this* module - the same authority parser, the same host
+//! lists - rather than a second validator written next to the HTTP client. All
+//! [`Protocol`] changes is which two schemes are accepted:
+//!
+//! | protocol | secure (required against a real host) | plaintext (loopback, testnet only) |
+//! |---|---|---|
+//! | [`Protocol::WebSocket`] | `wss://` | `ws://` |
+//! | [`Protocol::Rest`]      | `https://` | `http://` |
+//!
+//! A second parser would be the bug: two parsers that disagree about where a
+//! host ends is exactly the confusion [`host_of`] exists to refuse.
 
-/// Which exchange environment a WebSocket URL actually points at.
+/// Which exchange environment a URL actually points at.
 ///
 /// Serialisable because it is stamped into every session recording's header: a
 /// capture must say for itself whether it came from testnet or production, since
@@ -30,26 +46,62 @@ pub enum EndpointClass {
     Production,
 }
 
+/// Which wire protocol an endpoint URL is for.
+///
+/// This selects the scheme pair and nothing else. Classification keys on the
+/// host, exactly as it always has, so the two protocols share one set of host
+/// lists and one authority parser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Protocol {
+    /// Market and user data streams: `wss://`, or `ws://` on loopback.
+    WebSocket,
+    /// The REST API: `https://`, or `http://` on loopback.
+    Rest,
+}
+
 /// Hosts serving the Binance **spot testnet**. No real funds.
+///
+/// Both protocols in one list, because classification is a question about the
+/// *host*. `testnet.binance.vision` is the REST host, confirmed against the
+/// testnet landing page during milestone 3 (`https://testnet.binance.vision/api`
+/// is the documented REST base); the `stream.` and `ws-api.` hosts serve the
+/// sockets.
 pub const TESTNET_HOSTS: &[&str] = &[
     "stream.testnet.binance.vision",
     "ws-api.testnet.binance.vision",
+    "testnet.binance.vision",
 ];
 
 /// Hosts serving **live, real-money** Binance spot.
 ///
 /// `data-stream.binance.vision` is market-data-only, but it is *production*
 /// market data. It is listed here deliberately: it is the host most likely to
-/// be mistaken for a testnet endpoint.
+/// be mistaken for a testnet endpoint. `data-api.binance.vision` is its REST
+/// twin and is listed for the same reason.
+///
+/// The `api1`-`api4` and `api-gcp` hosts are documented production alternatives
+/// ("better performance but less stability"). They are listed because an
+/// operator may legitimately configure one, and a production host that is
+/// *missing* from this list classifies as `None` - a refusal, which is safe but
+/// unhelpful. A production host wrongly placed in [`TESTNET_HOSTS`] would be
+/// catastrophic and silent, which is why the rule is: when unsure, leave a host
+/// off both lists entirely.
 ///
 /// NOTE: that classification is a documented fact about Binance, not something
 /// the tests below can establish - they only assert what we wrote down. It is on
-/// the milestone verify list. If Binance repurposes the host, this constant is
+/// the milestone verify list. If Binance repurposes a host, this constant is
 /// what has to change.
 pub const PRODUCTION_HOSTS: &[&str] = &[
     "stream.binance.com",
     "ws-api.binance.com",
     "data-stream.binance.vision",
+    "api.binance.com",
+    "api-gcp.binance.com",
+    "api1.binance.com",
+    "api2.binance.com",
+    "api3.binance.com",
+    "api4.binance.com",
+    "data-api.binance.vision",
 ];
 
 /// The canonical testnet spot market-stream URL. This is what a testnet config
@@ -67,14 +119,24 @@ pub const TESTNET_SPOT_WS_URL: &str = "wss://stream.testnet.binance.vision/strea
 /// has something to be tested against. Nothing in this milestone connects to it.
 pub const PRODUCTION_SPOT_WS_URL: &str = "wss://stream.binance.com:9443/stream";
 
+/// The canonical testnet spot REST base URL. The `/api/v3/...` path is appended
+/// by [`crate::rest`]; this constant is the base an operator configures.
+pub const TESTNET_SPOT_REST_URL: &str = "https://testnet.binance.vision";
+
+/// The canonical production spot REST base URL, recorded so the classifier has
+/// something to be tested against. Nothing in this milestone connects to it.
+pub const PRODUCTION_SPOT_REST_URL: &str = "https://api.binance.com";
+
 /// Loopback authorities, which by construction cannot be an exchange.
 ///
-/// These exist for the local fake WebSocket server the connection tests run
-/// against, so those tests exercise the *real* constructor rather than an
-/// unchecked back door. See [`require_class`] for the exact, narrow allowance.
+/// These exist for the local fake servers the tests run against - a WebSocket
+/// server for the connection tests, an HTTP server for the REST tests - so those
+/// tests exercise the *real* constructor rather than an unchecked back door. See
+/// [`require_class_for`] for the exact, narrow allowance.
 const LOOPBACK_HOSTS: &[&str] = &["127.0.0.1", "localhost", "[::1]"];
 
-/// A refusal to connect. Every variant means "did not open a socket".
+/// A refusal to connect. Every variant means "did not open a socket, did not
+/// send a request".
 #[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum EndpointError {
     #[error(
@@ -90,11 +152,14 @@ pub enum EndpointError {
 
     #[error(
         "refusing to connect: `{url}` is not a recognised Binance `{expected}` \
-         WebSocket endpoint. Expected one of: {}",
+         {} endpoint. Expected {} against one of: {}",
+        .protocol.as_str(),
+        .protocol.secure_scheme(),
         .expected.hosts().join(", ")
     )]
     Unrecognised {
         expected: EndpointClass,
+        protocol: Protocol,
         url: String,
     },
 }
@@ -108,7 +173,7 @@ impl EndpointClass {
         }
     }
 
-    /// The canonical hosts for this class.
+    /// The canonical hosts for this class, across both protocols.
     #[must_use]
     pub fn hosts(self) -> &'static [&'static str] {
         match self {
@@ -129,18 +194,61 @@ impl std::fmt::Display for EndpointClass {
     }
 }
 
-/// Classify a WebSocket URL by its host.
-///
-/// Returns `None` for anything that is not exactly one of the canonical hosts
-/// over `wss://` - including loopback, unknown hosts, plaintext `ws://` against
-/// a real host, and any URL whose authority we cannot parse unambiguously.
-/// `None` is not "probably fine"; callers must treat it as a refusal.
+impl Protocol {
+    /// The scheme required against a real exchange host. TLS is not optional.
+    #[must_use]
+    pub const fn secure_scheme(self) -> &'static str {
+        match self {
+            Self::WebSocket => "wss://",
+            Self::Rest => "https://",
+        }
+    }
+
+    /// The plaintext scheme, accepted **only** on loopback and **only** in the
+    /// testnet direction. See [`require_class_for`].
+    #[must_use]
+    pub const fn plaintext_scheme(self) -> &'static str {
+        match self {
+            Self::WebSocket => "ws://",
+            Self::Rest => "http://",
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::WebSocket => "WebSocket",
+            Self::Rest => "REST",
+        }
+    }
+}
+
+impl std::fmt::Display for Protocol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Classify a WebSocket URL by its host. [`classify_for`] with
+/// [`Protocol::WebSocket`].
 #[must_use]
 pub fn classify(url: &str) -> Option<EndpointClass> {
-    // TLS is not optional against the real exchange. A `ws://` URL naming a
-    // Binance host is either a typo or an attempted downgrade; either way it is
-    // not something we will classify as a valid endpoint.
-    let host = host_of(url.strip_prefix("wss://")?)?;
+    classify_for(Protocol::WebSocket, url)
+}
+
+/// Classify a URL by its host.
+///
+/// Returns `None` for anything that is not exactly one of the canonical hosts
+/// over `protocol`'s secure scheme - including loopback, unknown hosts,
+/// plaintext against a real host, the *other* protocol's scheme, and any URL
+/// whose authority we cannot parse unambiguously. `None` is not "probably fine";
+/// callers must treat it as a refusal.
+#[must_use]
+pub fn classify_for(protocol: Protocol, url: &str) -> Option<EndpointClass> {
+    // TLS is not optional against the real exchange. A `ws://` or `http://` URL
+    // naming a Binance host is either a typo or an attempted downgrade; either
+    // way it is not something we will classify as a valid endpoint.
+    let host = host_of(url.strip_prefix(protocol.secure_scheme())?)?;
 
     if TESTNET_HOSTS.iter().any(|h| host.eq_ignore_ascii_case(h)) {
         return Some(EndpointClass::Testnet);
@@ -154,45 +262,68 @@ pub fn classify(url: &str) -> Option<EndpointClass> {
     None
 }
 
-/// Whether `url` names a loopback address.
-///
-/// True only for the literal loopback authorities, over either scheme. A
-/// loopback address can never be Binance, which is what makes the allowance in
-/// [`require_class`] safe.
+/// Whether `url` names a loopback address, over either WebSocket scheme.
+/// [`is_loopback_for`] with [`Protocol::WebSocket`].
 #[must_use]
 pub fn is_loopback(url: &str) -> bool {
+    is_loopback_for(Protocol::WebSocket, url)
+}
+
+/// Whether `url` names a loopback address.
+///
+/// True only for the literal loopback authorities, over either of `protocol`'s
+/// schemes. A loopback address can never be Binance, which is what makes the
+/// allowance in [`require_class_for`] safe.
+#[must_use]
+pub fn is_loopback_for(protocol: Protocol, url: &str) -> bool {
     let rest = url
-        .strip_prefix("wss://")
-        .or_else(|| url.strip_prefix("ws://"));
+        .strip_prefix(protocol.secure_scheme())
+        .or_else(|| url.strip_prefix(protocol.plaintext_scheme()));
     rest.and_then(host_of)
         .is_some_and(|host| LOOPBACK_HOSTS.iter().any(|h| host.eq_ignore_ascii_case(h)))
+}
+
+/// The gate, for a WebSocket URL. [`require_class_for`] with
+/// [`Protocol::WebSocket`].
+///
+/// # Errors
+///
+/// As [`require_class_for`].
+pub fn require_class(expected: EndpointClass, url: &str) -> Result<(), EndpointError> {
+    require_class_for(Protocol::WebSocket, expected, url)
 }
 
 /// The gate. Refuse unless `url` provably belongs to the `expected` environment.
 ///
 /// The one carve-out is deliberate and narrow: a loopback URL is accepted when
-/// `expected` is [`EndpointClass::Testnet`], so the connection tests drive the
-/// real constructor against a local fake server. Loopback under
+/// `expected` is [`EndpointClass::Testnet`], so the tests drive the real
+/// constructors against local fake servers. Loopback under
 /// [`EndpointClass::Production`] is refused like anything else - the carve-out
 /// only ever makes the *safe* direction more permissive, and it cannot put a
-/// production-labelled run anywhere near a socket that is not a real one.
+/// production-labelled run anywhere near a socket or a request that is not a
+/// real one.
 ///
 /// # Errors
 ///
 /// [`EndpointError::Mismatch`] when the URL is a recognised endpoint for the
 /// other environment - the dangerous case, worth its own message - and
 /// [`EndpointError::Unrecognised`] when it is not a recognised endpoint at all.
-pub fn require_class(expected: EndpointClass, url: &str) -> Result<(), EndpointError> {
-    match classify(url) {
+pub fn require_class_for(
+    protocol: Protocol,
+    expected: EndpointClass,
+    url: &str,
+) -> Result<(), EndpointError> {
+    match classify_for(protocol, url) {
         Some(found) if found == expected => Ok(()),
         Some(found) => Err(EndpointError::Mismatch {
             expected,
             found,
             url: url.to_owned(),
         }),
-        None if expected == EndpointClass::Testnet && is_loopback(url) => Ok(()),
+        None if expected == EndpointClass::Testnet && is_loopback_for(protocol, url) => Ok(()),
         None => Err(EndpointError::Unrecognised {
             expected,
+            protocol,
             url: url.to_owned(),
         }),
     }
@@ -517,6 +648,7 @@ mod tests {
                 err,
                 EndpointError::Unrecognised {
                     expected,
+                    protocol: Protocol::WebSocket,
                     url: url.to_owned(),
                 }
             );
@@ -582,6 +714,7 @@ mod tests {
                     require_class(EndpointClass::Production, &url),
                     Err(EndpointError::Unrecognised {
                         expected: EndpointClass::Production,
+                        protocol: Protocol::WebSocket,
                         url: url.clone(),
                     }),
                     "production must refuse a loopback feed: {url}"
@@ -753,5 +886,226 @@ mod tests {
         assert!(!EndpointClass::Testnet.is_production());
         assert_eq!(EndpointClass::Testnet.hosts(), TESTNET_HOSTS);
         assert_eq!(EndpointClass::Production.hosts(), PRODUCTION_HOSTS);
+    }
+
+    // --- the REST generalisation (milestone 3) ---
+    //
+    // Every test above is about `wss://` and must keep passing untouched: the
+    // generalisation adds a second scheme pair, it does not loosen the first.
+
+    #[test]
+    fn canonical_rest_constants_classify_as_themselves() {
+        assert_eq!(
+            classify_for(Protocol::Rest, TESTNET_SPOT_REST_URL),
+            Some(EndpointClass::Testnet),
+            "{TESTNET_SPOT_REST_URL}"
+        );
+        assert_eq!(
+            classify_for(Protocol::Rest, PRODUCTION_SPOT_REST_URL),
+            Some(EndpointClass::Production),
+            "{PRODUCTION_SPOT_REST_URL}"
+        );
+    }
+
+    #[test]
+    fn https_against_a_listed_host_classifies_by_host_exactly_as_wss_does() {
+        // The point of the generalisation: one host list, two scheme pairs. The
+        // host decides the class; the protocol only decides which schemes are
+        // spellable.
+        for host in TESTNET_HOSTS {
+            for url in [
+                format!("https://{host}"),
+                format!("https://{host}/api/v3/exchangeInfo"),
+                format!("https://{host}:443/api/v3/exchangeInfo?symbol=BTCUSDT"),
+            ] {
+                assert_eq!(
+                    classify_for(Protocol::Rest, &url),
+                    Some(EndpointClass::Testnet),
+                    "{url}"
+                );
+            }
+        }
+        for host in PRODUCTION_HOSTS {
+            let url = format!("https://{host}/api/v3/exchangeInfo");
+            assert_eq!(
+                classify_for(Protocol::Rest, &url),
+                Some(EndpointClass::Production),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_two_scheme_pairs_do_not_leak_into_each_other() {
+        // A REST URL is not a WebSocket endpoint and vice versa. This is what
+        // keeps the WS gate exactly as strict as it was in milestone 2: the
+        // `https://` case it used to refuse, it still refuses.
+        assert_eq!(classify(TESTNET_SPOT_REST_URL), None);
+        assert_eq!(classify(PRODUCTION_SPOT_REST_URL), None);
+        assert_eq!(classify_for(Protocol::Rest, TESTNET_SPOT_WS_URL), None);
+        assert_eq!(classify_for(Protocol::Rest, PRODUCTION_SPOT_WS_URL), None);
+
+        for expected in [EndpointClass::Testnet, EndpointClass::Production] {
+            assert!(require_class(expected, PRODUCTION_SPOT_REST_URL).is_err());
+            assert!(require_class_for(Protocol::Rest, expected, PRODUCTION_SPOT_WS_URL).is_err());
+        }
+    }
+
+    #[test]
+    fn plaintext_http_against_a_real_host_is_not_recognised() {
+        // TLS is not optional against the exchange, on either protocol.
+        for url in [
+            "http://api.binance.com/api/v3/exchangeInfo",
+            "http://testnet.binance.vision/api/v3/exchangeInfo",
+            "http://data-api.binance.vision/api/v3/exchangeInfo",
+        ] {
+            assert_eq!(classify_for(Protocol::Rest, url), None, "{url}");
+            assert!(
+                require_class_for(Protocol::Rest, EndpointClass::Testnet, url).is_err(),
+                "{url}"
+            );
+            assert!(
+                require_class_for(Protocol::Rest, EndpointClass::Production, url).is_err(),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_testnet_rest_config_aimed_at_a_production_host_refuses() {
+        // The REST twin of THE test. A testnet-labelled run must never issue a
+        // request against the live exchange, not even an unauthenticated one:
+        // the filters it would come back with are the *production* symbol's, and
+        // quantizing testnet orders against them is silent wrongness.
+        for url in [
+            PRODUCTION_SPOT_REST_URL,
+            "https://api.binance.com/api/v3/exchangeInfo",
+            "https://api3.binance.com",
+            "https://data-api.binance.vision",
+        ] {
+            let err = require_class_for(Protocol::Rest, EndpointClass::Testnet, url)
+                .expect_err("a testnet config must never reach a production host");
+            assert_eq!(
+                err,
+                EndpointError::Mismatch {
+                    expected: EndpointClass::Testnet,
+                    found: EndpointClass::Production,
+                    url: url.to_owned(),
+                },
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_production_rest_config_aimed_at_a_testnet_host_refuses() {
+        for url in [
+            TESTNET_SPOT_REST_URL,
+            "https://testnet.binance.vision/api/v3/exchangeInfo",
+        ] {
+            assert_eq!(
+                require_class_for(Protocol::Rest, EndpointClass::Production, url),
+                Err(EndpointError::Mismatch {
+                    expected: EndpointClass::Production,
+                    found: EndpointClass::Testnet,
+                    url: url.to_owned(),
+                }),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_loopback_is_allowed_only_in_the_testnet_direction() {
+        // The carve-out that lets the REST tests drive the real client against a
+        // local fake HTTP server. Same shape, same narrowness, same reason as the
+        // WebSocket one - and production still refuses it.
+        for host in ["127.0.0.1:8080", "localhost", "[::1]:9001", "127.0.0.1"] {
+            for scheme in ["http", "https"] {
+                let url = format!("{scheme}://{host}/api/v3/exchangeInfo");
+
+                assert!(is_loopback_for(Protocol::Rest, &url), "{url}");
+                assert_eq!(classify_for(Protocol::Rest, &url), None, "{url}");
+                assert_eq!(
+                    require_class_for(Protocol::Rest, EndpointClass::Testnet, &url),
+                    Ok(()),
+                    "testnet must still reach a local fake server: {url}"
+                );
+                assert_eq!(
+                    require_class_for(Protocol::Rest, EndpointClass::Production, &url),
+                    Err(EndpointError::Unrecognised {
+                        expected: EndpointClass::Production,
+                        protocol: Protocol::Rest,
+                        url: url.clone(),
+                    }),
+                    "production must refuse a loopback REST endpoint: {url}"
+                );
+            }
+        }
+        // A WebSocket-scheme loopback URL is not a REST endpoint, and the other
+        // way round: the carve-out does not become a scheme-free back door.
+        assert!(!is_loopback_for(Protocol::Rest, "ws://127.0.0.1:8080/ws"));
+        assert!(!is_loopback_for(
+            Protocol::WebSocket,
+            "http://127.0.0.1:8080/"
+        ));
+    }
+
+    #[test]
+    fn the_hostile_authority_cases_refuse_under_https_too() {
+        // The parser is shared, so this should hold by construction - which is
+        // exactly why it is worth asserting: it pins that REST really does route
+        // through `host_of` rather than through a second, sloppier check.
+        for url in [
+            "https://testnet.binance.vision@evil.example/api/v3/exchangeInfo",
+            "https://user:pass@api.binance.com/api/v3/exchangeInfo",
+            "https://testnet%2ebinance.vision/api/v3/exchangeInfo",
+            r"https://api.binance.com\@evil.example/api",
+            "https://api.binance.co\tm/api",
+            "https://api.binance.com.evil.example/api",
+            "https://notapi.binance.com/api",
+            "https://binance.com/api",
+            "https://\u{0430}pi.binance.com/api",
+        ] {
+            assert_eq!(classify_for(Protocol::Rest, url), None, "{url:?}");
+            assert!(
+                require_class_for(Protocol::Rest, EndpointClass::Testnet, url).is_err(),
+                "{url:?}"
+            );
+            assert!(
+                require_class_for(Protocol::Rest, EndpointClass::Production, url).is_err(),
+                "{url:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unrecognised_message_names_the_protocol_and_the_scheme_it_wanted() {
+        let err = require_class_for(
+            Protocol::Rest,
+            EndpointClass::Testnet,
+            "https://api.example.com",
+        )
+        .expect_err("must refuse the unknown");
+        let msg = err.to_string();
+        assert!(msg.contains("REST"), "{msg}");
+        assert!(msg.contains("https://"), "{msg}");
+        assert!(msg.contains("testnet.binance.vision"), "{msg}");
+
+        let msg = require_class(EndpointClass::Testnet, "wss://stream.example.com")
+            .expect_err("must refuse the unknown")
+            .to_string();
+        assert!(msg.contains("WebSocket"), "{msg}");
+        assert!(msg.contains("wss://"), "{msg}");
+    }
+
+    #[test]
+    fn protocol_display_and_schemes_are_stable() {
+        assert_eq!(Protocol::WebSocket.to_string(), "WebSocket");
+        assert_eq!(Protocol::Rest.to_string(), "REST");
+        assert_eq!(Protocol::WebSocket.secure_scheme(), "wss://");
+        assert_eq!(Protocol::WebSocket.plaintext_scheme(), "ws://");
+        assert_eq!(Protocol::Rest.secure_scheme(), "https://");
+        assert_eq!(Protocol::Rest.plaintext_scheme(), "http://");
     }
 }

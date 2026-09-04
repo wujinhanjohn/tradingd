@@ -42,6 +42,21 @@ secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 tempfile = "3"
+# The workspace's ONE HTTP client, for the milestone-3 REST calls.
+#
+# `ureq` over `reqwest` after checking the feature graphs: reqwest's `rustls`
+# feature resolves through `__rustls-aws-lc-rs`, and `aws-lc-rs` needs cmake and
+# a C toolchain - the thing that broke the clean build in milestone 2 - while its
+# provider-free variant pulls `rustls-platform-verifier` and the OS trust store
+# with it. `ureq`'s `rustls` feature is `rustls-no-provider + rustls/ring +
+# webpki-roots`: exactly the ring provider and the bundled trust anchors we
+# already use for `wss://`, with no hyper/tower/h2 tree behind it. It is
+# blocking, which is the right shape for a startup fetch and an every-few-minutes
+# refresh - both run on `tokio::task::spawn_blocking`.
+#
+# `gzip` is off: a compressed body would be one more thing between the exchange's
+# bytes and the parse, for a payload that is a couple of kilobytes per symbol.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 # No features by default: each crate opts into exactly what it uses, so the
 # feature set stays auditable. `full` would drag in fs, net and process.
 tokio = { version = "1", default-features = false }

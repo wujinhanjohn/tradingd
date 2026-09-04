@@ -139,8 +139,15 @@ legible in code and survives a future dependency enabling a second backend.
 a plain TCP listener, which walks the whole TLS setup path and asserts a typed
 error rather than a panic.
 
+**Milestone 3 added a second protocol with exactly the same hole.** The REST
+tests run against a local fake HTTP server over plaintext `http://`, so the
+first real `https://` handshake in this project's life also happened against the
+live testnet. It worked - `ureq`'s `rustls` feature selects `ring`, and
+`install_crypto_provider` is called before the first request - but that was
+confirmed by a manual run, not by `cargo test`.
+
 What is *still* not covered offline: certificate verification, the webpki root
-store, and anything past the ClientHello.
+store, and anything past the ClientHello, on either protocol.
 Covering it would mean a TLS fake server with a generated CA - real work, and
 worth doing before anything depends on TLS behaviour rather than merely on TLS
 existing.
@@ -152,3 +159,82 @@ Worth remembering more generally: the fail-closed seam behaved correctly through
 this. The source task panicked, the channel closed, the engine logged the dead
 feed as critical and stopped cleanly, and `bot` exited non-zero carrying the real
 reason. The bug was found in seconds rather than presenting as a hang.
+
+## Filter freshness has a contract but no teeth until M6
+
+`FilterBook::ensure_fresh(now_ns, max_age_ns)` exists, is tested, and is what
+`settings.filters.max_age_ms` configures - and **nothing calls it on an order
+path, because there is no order path yet**.
+
+That is deliberate, not an oversight. The contract is defined in milestone 3 so
+that milestone 6 consumes it rather than inventing one under order-path
+pressure, and so the refresh loop could be built and tested against it now.
+
+The gate item for the order milestone:
+
+> Quantizing an order calls `ensure_fresh` first, and a stale book refuses the
+> order rather than aligning it against rules we can no longer vouch for.
+
+Note what already holds and must not regress: a *failed* refresh keeps serving
+the last good book but does **not** move `fetched_at_ns`, so the book ages and
+`ensure_fresh` starts failing. That is the whole fail-closed mechanism - do not
+"fix" a failed refresh by restamping the book's fetch time.
+
+## Zero in a Binance filter means "rule disabled" - do not treat it as a bound
+
+Confirmed against the filter documentation and against the live testnet capture:
+within a symbol filter, any value may be `0`, which disables that rule.
+`MARKET_LOT_SIZE` on testnet BTCUSDT really does ship
+`"stepSize": "0.00000000"`.
+
+`domain::SymbolFilters` therefore accepts a zero bound and
+`domain::quantize` skips the corresponding rule. This looks like a hole and is
+not one: a zero `tickSize` read as a divisor is a panic, and a zero `maxQty`
+read as a literal maximum rejects every order on the symbol.
+
+What a disabled rule never does is make an order *more* valid: a price must be
+strictly positive whatever `minPrice` says, and a quantity must be strictly
+positive whatever `minQty` says. Both are asserted.
+
+## The quantizer has no rounding policy, on purpose
+
+Quantity floors; a limit price rounds to the less aggressive tick for its side
+(a buy floors, a sell ceils). There is no `RoundingPolicy` parameter offering
+nearest or aggressive rounding.
+
+The reason is the project's usual one: draw the abstraction around the second
+real case, not the first imagined one. No caller needs anything but the
+conservative default until a real strategy does. If a milestone-6 strategy needs
+aggressive quoting to get filled, add the parameter *then*, with that strategy
+as the justification - and keep the conservative behaviour as the default,
+because it is the safe bias for a system whose orders should be cautious.
+
+## Deferred to M6, and already shaped for it
+
+- **Market-order quantization.** `OrderKind::Market` returns
+  `QuantizeReject::MarketNotSupported` - a loud typed refusal, not a silent
+  mishandle. It needs `MARKET_LOT_SIZE` (already parsed and carried on
+  `SymbolInfo::market_lot_size`, unused) and an average-price reference for the
+  notional check, which needs `avgPriceMins` and a price source we do not have a
+  clean answer for yet.
+- **The unmodelled filters.** `PERCENT_PRICE_BY_SIDE`, `MAX_NUM_ORDERS`,
+  `ICEBERG_PARTS`, `TRAILING_DELTA` and the rest are surfaced at `warn` on every
+  start and otherwise not enforced. They mean the exchange can reject an order
+  the quantizer thinks is fine. Whichever of them the order path trips over
+  first is the one worth modelling next.
+
+## Rate limiting: one chokepoint, no accounting yet - M4
+
+`exchangeInfo` costs **20 request weight** against a 6000/minute budget
+(confirmed from the live response's `x-mbx-used-weight` header), and the shipped
+config refetches every five minutes. That is 240 weight an hour, so no limiter
+is needed to make milestone 3 safe.
+
+What matters for M4 is that there is exactly one place to put one:
+`RestClient::get_json` is the single request path, and every future endpoint
+goes through it. Weight accounting and the limiter slot in front of that method
+rather than at call sites.
+
+Also unimplemented and deliberately so: clock sync (`serverTime` is in the
+`exchangeInfo` response we already fetch and is ignored) and signing. Neither is
+needed for a public endpoint.

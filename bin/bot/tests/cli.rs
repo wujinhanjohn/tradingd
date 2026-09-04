@@ -9,6 +9,7 @@
 //! these tests prove.
 
 mod fake_feed;
+mod fake_rest;
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -16,6 +17,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use fake_feed::{FakeFeed, Mode};
+use fake_rest::FakeRest;
 use tempfile::TempDir;
 
 /// Canary values placed in the credential env vars. They must never appear in
@@ -39,6 +41,10 @@ symbols      = ["BTCUSDT"]
 streams      = ["book_ticker", "trade"]
 staleness_ms = 10000
 
+[filters]
+refresh_interval_ms = 10000
+max_age_ms          = 900000
+
 [recording]
 enabled = false
 dir     = "recordings"
@@ -52,14 +58,18 @@ fn production_config() -> String {
     TESTNET_CONFIG.replace(r#""testnet""#, r#""production""#)
 }
 
-/// A config pointed at a local fake feed, with recording on into `recording_dir`.
+/// A config pointed at a local fake feed **and** a local fake REST endpoint,
+/// with recording on into `recording_dir`.
 ///
 /// This is what the tests that actually run the engine use, so the child process
-/// exercises the whole path - subscribe, normalize, record, log, shut down -
-/// without a live feed anywhere in it.
-fn feed_config(feed: &FakeFeed, recording_dir: &Path) -> String {
+/// exercises the whole path - fetch filters, subscribe, normalize, record, log,
+/// shut down - without a live exchange anywhere in it. Both fakes are on
+/// loopback, which is the one place the endpoint gate allows plaintext, and only
+/// in the testnet direction.
+fn feed_config(feed: &FakeFeed, rest: &FakeRest, recording_dir: &Path) -> String {
     TESTNET_CONFIG
         .replace("wss://stream.testnet.binance.vision/stream", feed.url())
+        .replace("https://testnet.binance.vision", rest.url())
         .replace("enabled = false", "enabled = true")
         .replace(
             r#"dir     = "recordings""#,
@@ -355,8 +365,9 @@ fn production_with_the_exact_confirmation_shouts_and_still_refuses_a_testnet_end
 #[test]
 fn boots_logs_a_live_feed_records_it_and_exits_cleanly_on_ctrl_c() {
     let feed = FakeFeed::start(Mode::Feed);
+    let rest = FakeRest::start(fake_rest::Mode::Filters);
     let recordings = TempDir::new().expect("temp dir");
-    let out = Run::new(Some(&feed_config(&feed, recordings.path())))
+    let out = Run::new(Some(&feed_config(&feed, &rest, recordings.path())))
         .run_until_marker_then_interrupt("heartbeat");
 
     assert_eq!(out.code, Some(0), "Ctrl-C must exit cleanly:\n{}", out.log);
@@ -386,6 +397,21 @@ fn boots_logs_a_live_feed_records_it_and_exits_cleanly_on_ctrl_c() {
         !out.log.contains("market data gap"),
         "a leaping order book updateId must not be reported as a gap:\n{}",
         out.log
+    );
+
+    // The milestone-3 startup fetch, through the real REST client, the real
+    // parse, and the real filter book.
+    out.assert_contains("symbol filters", "the parsed filters are logged");
+    out.assert_contains("0.01000000", "the tick size is logged exactly as sent");
+    out.assert_contains("5.00000000", "and so is the minimum notional");
+    out.assert_contains(
+        "the exchange enforces filters this build does not model",
+        "unmodelled filter types are surfaced, not dropped",
+    );
+    out.assert_contains("PERCENT_PRICE_BY_SIDE", "and are named");
+    out.assert_contains(
+        "refreshing on an interval",
+        "the refresh loop is running, not a one-shot fetch",
     );
 
     out.assert_contains("heartbeat", "the idle loop is alive");
@@ -444,9 +470,10 @@ fn a_dead_market_source_shuts_the_whole_process_down_and_does_not_hang() {
     // treats a dead feed as critical and stops, and the process exits with the
     // source's own reason rather than sitting there looking healthy.
     let feed = FakeFeed::start(Mode::Refuse);
+    let rest = FakeRest::start(fake_rest::Mode::Filters);
     let recordings = TempDir::new().expect("temp dir");
 
-    let out = Run::new(Some(&feed_config(&feed, recordings.path())))
+    let out = Run::new(Some(&feed_config(&feed, &rest, recordings.path())))
         .run_to_completion_within(Duration::from_secs(30));
 
     assert_eq!(
@@ -469,6 +496,94 @@ fn a_dead_market_source_shuts_the_whole_process_down_and_does_not_hang() {
     out.assert_contains(
         "market source stopped with an error",
         "the real reason surfaces from the source, not invented by the engine",
+    );
+    out.assert_no_secrets();
+}
+
+// --- the REST endpoint gate and the fail-closed startup fetch (milestone 3) ---
+
+#[test]
+fn a_testnet_config_pointed_at_a_production_rest_host_refuses_to_start() {
+    // The REST twin of the endpoint test above, at the level an operator hits
+    // it. The WebSocket URL is a local fake here, so the only thing that can
+    // refuse is the REST gate - and it must, before any request is made.
+    let feed = FakeFeed::start(Mode::Feed);
+    let out = Run::new(Some(
+        &TESTNET_CONFIG
+            .replace("wss://stream.testnet.binance.vision/stream", feed.url())
+            .replace("https://testnet.binance.vision", "https://api.binance.com"),
+    ))
+    .run_to_completion();
+
+    assert_eq!(out.code, Some(1), "must exit non-zero:\n{}", out.log);
+    out.assert_contains("refusing to connect", "must say it is refusing");
+    out.assert_contains("api.binance.com", "must name the offending host");
+    out.assert_contains("REST", "and say which endpoint it was");
+    out.assert_no_secrets();
+}
+
+#[test]
+fn a_failed_filter_fetch_refuses_to_start_rather_than_running_without_rules() {
+    // Fail-closed at the first I/O of the run: no filters means no way to
+    // quantize an order, and a bot that starts anyway would discover that at the
+    // worst possible moment.
+    let feed = FakeFeed::start(Mode::Feed);
+    let rest = FakeRest::start(fake_rest::Mode::Unavailable);
+    let recordings = TempDir::new().expect("temp dir");
+
+    let out = Run::new(Some(&feed_config(&feed, &rest, recordings.path())))
+        .run_to_completion_within(Duration::from_secs(30));
+
+    assert_eq!(out.code, Some(1), "must exit non-zero:\n{}", out.log);
+    out.assert_contains(
+        "Refusing to start without them",
+        "the refusal must say what it could not get",
+    );
+    out.assert_contains("503", "and what the exchange answered");
+    out.assert_no_secrets();
+}
+
+#[test]
+fn a_configured_symbol_the_exchange_does_not_list_refuses_to_start() {
+    // The response is perfectly well-formed - it is just about a different
+    // symbol. Skipping the missing one would leave the bot trading a symbol it
+    // has no rules for.
+    let feed = FakeFeed::start(Mode::Feed);
+    let rest = FakeRest::start(fake_rest::Mode::WrongSymbol);
+    let recordings = TempDir::new().expect("temp dir");
+
+    let out = Run::new(Some(&feed_config(&feed, &rest, recordings.path())))
+        .run_to_completion_within(Duration::from_secs(30));
+
+    assert_eq!(out.code, Some(1), "must exit non-zero:\n{}", out.log);
+    out.assert_contains("BTCUSDT", "must name the symbol it could not get rules for");
+    out.assert_contains("Refusing to start", "and refuse rather than skip it");
+    out.assert_no_secrets();
+}
+
+#[test]
+fn the_quantize_demo_shows_the_quantizer_working_against_the_fetched_filters() {
+    // Milestone 3 builds a component nothing calls yet - no order is placed
+    // until milestone 6 - so this is the end-to-end evidence that the fetched
+    // filters and the quantizer meet correctly inside the real binary.
+    let feed = FakeFeed::start(Mode::Feed);
+    let rest = FakeRest::start(fake_rest::Mode::Filters);
+    let recordings = TempDir::new().expect("temp dir");
+
+    let mut run = Run::new(Some(&feed_config(&feed, &rest, recordings.path())));
+    run.cmd.arg("--quantize-demo");
+    let out = run.run_until_marker_then_interrupt("quantize demo");
+
+    assert_eq!(out.code, Some(0), "Ctrl-C must exit cleanly:\n{}", out.log);
+    out.assert_contains("quantize demo: accepted", "at least one order quantizes");
+    out.assert_contains("quantize demo: rejected", "and at least one is refused");
+    out.assert_contains(
+        "below minNotional",
+        "with the reason it was refused, not just a verdict",
+    );
+    out.assert_contains(
+        "market-order quantization is deferred",
+        "and the market path refuses loudly",
     );
     out.assert_no_secrets();
 }

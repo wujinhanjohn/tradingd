@@ -10,6 +10,9 @@
 //! `exchange` - so swapping `NoopStrategy` for a real one, or the live feed for
 //! a replay source, is a change to this file alone.
 
+mod quantize_demo;
+
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -29,6 +32,15 @@ struct Cli {
     /// Path to the TOML config file.
     #[arg(long, default_value = "config.toml")]
     config: String,
+
+    /// After fetching symbol filters, quantize a few example orders and log
+    /// what the quantizer decided.
+    ///
+    /// Nothing is sent: `domain::quantize` is pure, and there is no order path
+    /// until milestone 6. This exists so a real run can show the quantizer
+    /// working against the filters the live exchange just returned.
+    #[arg(long)]
+    quantize_demo: bool,
 }
 
 /// The environment the config declares, as the exchange adapter's own type.
@@ -118,6 +130,19 @@ async fn main() -> anyhow::Result<()> {
     let streams = exchange::StreamSet::new(&symbols, &kinds)
         .context("building the market subscription set")?;
 
+    // The REST client: validated the same way, through the same gate, before it
+    // can issue a single request. Built here, next to the source, because
+    // everything that can be checked without I/O is checked before any I/O
+    // happens - which is what keeps a mismatched endpoint from reaching the
+    // network even by accident.
+    let rest = Arc::new(
+        exchange::RestClient::new(
+            endpoint_class(config.environment),
+            &config.binance.spot_rest_url,
+        )
+        .context("preparing the Binance REST client")?,
+    );
+
     let (source, market_rx) = exchange::BinanceMarketSource::connect(
         endpoint_class(config.environment),
         &config.binance.spot_ws_url,
@@ -137,6 +162,71 @@ async fn main() -> anyhow::Result<()> {
     } else {
         tracing::warn!("recording is disabled; this session will leave nothing behind");
     }
+
+    // --- symbol filters: the first I/O of the run, and it is fail-closed ---
+    //
+    // A symbol whose trading rules we cannot fetch is one we cannot safely place
+    // an order on, so a failed fetch or a missing symbol refuses to start rather
+    // than starting without rules and discovering it at the first order.
+    let fetched = rest.fetch_exchange_info(&symbols).await.with_context(|| {
+        format!(
+            "fetching symbol filters from `{}`. Refusing to start without them",
+            rest.base_url()
+        )
+    })?;
+
+    for info in &fetched.symbols {
+        let filters = &info.filters;
+        tracing::info!(
+            symbol = %filters.symbol(),
+            status = info.status,
+            tick_size = %filters.tick_size(),
+            min_price = %filters.min_price(),
+            max_price = %filters.max_price(),
+            step_size = %filters.step_size(),
+            min_qty = %filters.min_qty(),
+            max_qty = %filters.max_qty(),
+            min_notional = %filters.min_notional(),
+            "symbol filters"
+        );
+        if info.status != exchange::STATUS_TRADING {
+            tracing::warn!(
+                symbol = %filters.symbol(),
+                status = info.status,
+                "the exchange is not currently trading this symbol"
+            );
+        }
+        if !info.unmodeled.is_empty() {
+            // Rules the exchange enforces and this build does not. They mean an
+            // order the quantizer thinks is fine can still be rejected, and that
+            // is much better said here than discovered at milestone 6.
+            tracing::warn!(
+                symbol = %filters.symbol(),
+                unmodeled = ?info.unmodeled,
+                "the exchange enforces filters this build does not model"
+            );
+        }
+        if args.quantize_demo {
+            quantize_demo::run(filters);
+        }
+    }
+
+    // The refresh loop, and the handle milestone 6's order path will read. It
+    // has no consumer yet beyond keeping the book current and logging changes -
+    // the mechanism is what this milestone builds.
+    let (refresher, filter_book_rx) = exchange::FilterRefresher::new(
+        Arc::clone(&rest),
+        symbols.clone(),
+        Duration::from_millis(config.filters.refresh_interval_ms),
+        Arc::clone(&fetched.book),
+    );
+    tracing::info!(
+        refresh_interval_ms = config.filters.refresh_interval_ms,
+        max_age_ms = config.filters.max_age_ms,
+        symbols = fetched.book.len(),
+        "symbol filters loaded; refreshing on an interval"
+    );
+    let refresh_task = tokio::spawn(refresher.run());
 
     let source_task = tokio::spawn(source.run());
 
@@ -158,6 +248,12 @@ async fn main() -> anyhow::Result<()> {
     let source_outcome = source_task
         .await
         .context("the market source task panicked")?;
+
+    // The refresher has nothing to flush - it holds no file and no socket - so
+    // it is aborted rather than waited for. Waiting would mean sitting through
+    // the rest of a refresh interval on the way out.
+    drop(filter_book_rx);
+    refresh_task.abort();
 
     engine_outcome.context("engine stopped with an error")?;
     source_outcome.context("market source stopped with an error")?;

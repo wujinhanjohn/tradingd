@@ -32,6 +32,10 @@ symbols      = ["BTCUSDT"]
 streams      = ["book_ticker", "trade"]
 staleness_ms = 10000
 
+[filters]
+refresh_interval_ms = 300000
+max_age_ms          = 900000
+
 [recording]
 enabled = false
 dir     = "recordings"
@@ -69,6 +73,12 @@ fn parses_the_sample_config_shipped_with_the_repo() {
         vec![StreamKind::BookTicker, StreamKind::Trade]
     );
     assert_eq!(config.market.staleness_ms, 10_000);
+    assert_eq!(config.filters.refresh_interval_ms, 300_000);
+    assert_eq!(config.filters.max_age_ms, 900_000);
+    assert!(
+        config.filters.max_age_ms > config.filters.refresh_interval_ms,
+        "the shipped config must be able to be fresh"
+    );
     assert!(
         config.recording.enabled,
         "capturing the stream is the point of this milestone"
@@ -416,6 +426,105 @@ fn a_plaintext_websocket_against_anything_but_loopback_is_still_rejected() {
         assert!(
             matches!(&err, Error::InvalidValue { field, .. } if *field == "binance.spot_ws_url"),
             "{url}: got {err:?}"
+        );
+    }
+}
+
+// --- [filters] ---
+
+#[test]
+fn a_filter_book_that_could_never_be_fresh_is_rejected() {
+    // The load-bearing relationship: a max age at or below the refresh interval
+    // means the book is stale before the next fetch could arrive, so the bot
+    // would refuse to trade on rules it had only just fetched. That is a
+    // configuration mistake, and it is caught here rather than at the first
+    // order.
+    for (interval, max_age) in [(300_000, 300_000), (300_000, 60_000)] {
+        let (_dir, path) = write_config(
+            &VALID
+                .replace(
+                    "refresh_interval_ms = 300000",
+                    &format!("refresh_interval_ms = {interval}"),
+                )
+                .replace(
+                    "max_age_ms          = 900000",
+                    &format!("max_age_ms = {max_age}"),
+                ),
+        );
+        let err = settings::load(&path).expect_err("a book that can never be fresh");
+        assert!(
+            matches!(&err, Error::InvalidValue { field, .. } if *field == "filters.max_age_ms"),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("greater than"),
+            "the message must say what the relationship is: {err}"
+        );
+    }
+}
+
+#[test]
+fn out_of_range_filter_intervals_are_rejected_at_both_ends() {
+    for bad in ["0", "9999", "3600001"] {
+        let (_dir, path) = write_config(&VALID.replace(
+            "refresh_interval_ms = 300000",
+            &format!("refresh_interval_ms = {bad}"),
+        ));
+        let err = settings::load(&path).expect_err("refresh interval out of range");
+        assert!(
+            matches!(&err, Error::InvalidValue { field, .. }
+                if *field == "filters.refresh_interval_ms"),
+            "`{bad}` should be refused, got {err:?}"
+        );
+    }
+
+    for bad in ["0", "9999", "86400001"] {
+        let (_dir, path) = write_config(&VALID.replace(
+            "max_age_ms          = 900000",
+            &format!("max_age_ms = {bad}"),
+        ));
+        let err = settings::load(&path).expect_err("max age out of range");
+        assert!(
+            matches!(&err, Error::InvalidValue { field, .. } if *field == "filters.max_age_ms"),
+            "`{bad}` should be refused, got {err:?}"
+        );
+    }
+}
+
+#[test]
+fn the_filters_section_is_required_like_every_other_section() {
+    // No `Default`, on purpose, exactly as with `environment`: how fresh the
+    // rules an order is checked against have to be is not a decision to inherit
+    // silently.
+    let (_dir, path) = write_config(&VALID.replace("refresh_interval_ms = 300000", ""));
+    let err = settings::load(&path).expect_err("an incomplete [filters] section");
+    assert!(matches!(err, Error::InvalidConfig { .. }), "got {err:?}");
+}
+
+#[test]
+fn a_plaintext_loopback_rest_url_is_accepted_for_local_end_to_end_tests() {
+    // The REST twin of the WebSocket carve-out: the end-to-end tests point the
+    // real binary at a local fake HTTP server. `exchange::require_class_for` is
+    // still the gate, and it refuses this under a production label.
+    let (_dir, path) =
+        write_config(&VALID.replace("https://testnet.binance.vision", "http://127.0.0.1:53112"));
+    let config = settings::load(&path).expect("a loopback REST URL is accepted");
+    assert_eq!(config.binance.spot_rest_url, "http://127.0.0.1:53112");
+}
+
+#[test]
+fn a_plaintext_rest_url_against_anything_but_loopback_is_still_rejected() {
+    for bad in [
+        "http://testnet.binance.vision",
+        "http://api.binance.com",
+        "http://127.0.0.1.evil.example:80",
+        "ftp://testnet.binance.vision",
+    ] {
+        let (_dir, path) = write_config(&VALID.replace("https://testnet.binance.vision", bad));
+        let err = settings::load(&path).expect_err("plaintext REST must be rejected");
+        assert!(
+            matches!(&err, Error::InvalidValue { field, .. } if *field == "binance.spot_rest_url"),
+            "`{bad}` should be refused, got {err:?}"
         );
     }
 }

@@ -6,8 +6,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use engine::Error;
 use settings::{
-    BinanceConfig, Config, Env, LoggingConfig, MarketConfig, RecordingConfig, StreamKind,
-    PRODUCTION_CONFIRMATION_VALUE, PRODUCTION_CONFIRMATION_VAR,
+    BinanceConfig, Config, Env, FiltersConfig, LoggingConfig, MarketConfig, RecordingConfig,
+    StreamKind, PRODUCTION_CONFIRMATION_VALUE, PRODUCTION_CONFIRMATION_VAR,
 };
 
 fn env_lock() -> MutexGuard<'static, ()> {
@@ -54,6 +54,10 @@ fn config(environment: Env) -> Config {
             symbols: vec!["BTCUSDT".to_owned()],
             streams: vec![StreamKind::BookTicker, StreamKind::Trade],
             staleness_ms: 10_000,
+        },
+        filters: FiltersConfig {
+            refresh_interval_ms: 300_000,
+            max_age_ms: 900_000,
         },
         recording: RecordingConfig {
             enabled: false,

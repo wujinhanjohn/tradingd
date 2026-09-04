@@ -272,7 +272,9 @@ fn log_ingest(message: &IngestMsg) -> Option<Timestamp> {
 mod tests {
     use domain::{Action, BookTicker, Price, Qty, StrategyCtx, Symbol, Trade};
     use secrecy::SecretString;
-    use settings::{BinanceConfig, Env, LoggingConfig, MarketConfig, RecordingConfig, StreamKind};
+    use settings::{
+        BinanceConfig, Env, FiltersConfig, LoggingConfig, MarketConfig, RecordingConfig, StreamKind,
+    };
     use tokio::sync::mpsc;
 
     use super::*;
@@ -301,6 +303,10 @@ mod tests {
                 symbols: vec!["BTCUSDT".to_owned()],
                 streams: vec![StreamKind::BookTicker, StreamKind::Trade],
                 staleness_ms: 10_000,
+            },
+            filters: FiltersConfig {
+                refresh_interval_ms: 300_000,
+                max_age_ms: 900_000,
             },
             recording: RecordingConfig {
                 enabled: false,

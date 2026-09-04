@@ -6,8 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
-# No HTTP client, by design. Milestone 2 is WebSocket-only; `reqwest`/`hyper`/
-# `ureq` must stay out of the workspace entirely.
+# The HTTP client arrives in milestone 3, and there is exactly one of it - see
+# the workspace manifest for why it is `ureq` on rustls+ring. `reqwest`/`hyper`/
+# `native-tls`/`aws-lc-rs` stay out of the workspace entirely.
 [dependencies]
 domain = { workspace = true }
 
@@ -18,13 +19,14 @@ rustls = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-# `time` for backoff/staleness deadlines, `sync` for the channel to the engine,
-# `macros` for the read loop's `select!`. The runtime flavour is the binary's
-# choice, so no `rt-*` here; `net` arrives transitively via tokio-tungstenite,
-# which needs a TcpStream to wrap.
-tokio = { workspace = true, features = ["macros", "sync", "time"] }
+# `time` for backoff/staleness/refresh deadlines, `sync` for the channel to the
+# engine and the filter-book watch, `macros` for the read loop's `select!`,
+# `rt` for `spawn_blocking` around the blocking HTTP client. The runtime flavour
+# is still the binary's choice, so no `rt-multi-thread` here.
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
 tokio-tungstenite = { workspace = true }
 tracing = { workspace = true }
+ureq = { workspace = true }
 
 [lints]
 workspace = true

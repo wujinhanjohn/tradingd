@@ -33,6 +33,22 @@ const MIN_STALENESS_MS: u64 = 100;
 /// looser than this is not a bound.
 const MAX_STALENESS_MS: u64 = 300_000;
 
+/// The narrowest filter refresh interval we will accept.
+///
+/// `exchangeInfo` costs 20 request weight against a 6000/minute budget, and
+/// symbol filters change on the order of never. Refetching more often than this
+/// spends the budget the order path will need in milestone 4 on data that did
+/// not change.
+const MIN_REFRESH_INTERVAL_MS: u64 = 10_000;
+
+/// The widest filter refresh interval we will accept. An hour between refreshes
+/// is already a long time to be trading on rules nobody rechecked.
+const MAX_REFRESH_INTERVAL_MS: u64 = 3_600_000;
+
+/// The widest filter age we will accept as "fresh". A day-old tick size is not
+/// a fact about the exchange, it is a memory of one.
+const MAX_FILTER_AGE_MS: u64 = 86_400_000;
+
 /// Loopback authorities, for which a plaintext `ws://` market URL is accepted.
 ///
 /// This exists so the end-to-end tests can point the *real binary* at a local
@@ -42,7 +58,12 @@ const MAX_STALENESS_MS: u64 = 300_000;
 /// refuses userinfo, percent-encoding, backslashes, and anything else that could
 /// make two parsers disagree about where the host ends. The check here only
 /// turns a plainly wrong URL into a readable error at load time.
-const LOOPBACK_PREFIXES: &[&str] = &["ws://127.0.0.1:", "ws://localhost:", "ws://[::1]:"];
+const LOOPBACK_WS_PREFIXES: &[&str] = &["ws://127.0.0.1:", "ws://localhost:", "ws://[::1]:"];
+
+/// The same allowance for the REST base URL, for the same reason: the
+/// end-to-end tests point the real binary at a local fake HTTP server.
+const LOOPBACK_REST_PREFIXES: &[&str] =
+    &["http://127.0.0.1:", "http://localhost:", "http://[::1]:"];
 
 /// Non-secret runtime configuration. Safe to log in full - by construction there
 /// is nowhere in here for a credential to hide.
@@ -52,6 +73,7 @@ pub struct Config {
     pub environment: Env,
     pub binance: BinanceConfig,
     pub market: MarketConfig,
+    pub filters: FiltersConfig,
     pub recording: RecordingConfig,
     pub logging: LoggingConfig,
 }
@@ -107,6 +129,23 @@ pub enum StreamKind {
     BookTicker,
     /// Individual trades.
     Trade,
+}
+
+/// How the symbol-filter book is kept current.
+///
+/// Two bounds, and the relationship between them is the load-bearing part:
+/// `max_age_ms` must be **greater** than `refresh_interval_ms`, or the book is
+/// stale before the next refresh could possibly arrive and the bot refuses to
+/// trade on rules it just fetched. A configuration that can never be fresh is
+/// refused at load time rather than discovered at the first order.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FiltersConfig {
+    /// How often to refetch `exchangeInfo`.
+    pub refresh_interval_ms: u64,
+    /// How old the filter book may be and still be acted on. Milestone 6's
+    /// order path is what enforces this; milestone 3 defines and carries it.
+    pub max_age_ms: u64,
 }
 
 /// Whether to write a session recording, and where.
@@ -239,12 +278,18 @@ pub fn load(path: impl AsRef<Path>) -> Result<Config, Error> {
 impl Config {
     /// Range and shape checks that the type system cannot express.
     fn validate(&self) -> Result<(), Error> {
-        require_scheme(
+        require_url_scheme(
             "binance.spot_rest_url",
             &self.binance.spot_rest_url,
             "https://",
+            LOOPBACK_REST_PREFIXES,
         )?;
-        require_ws_scheme("binance.spot_ws_url", &self.binance.spot_ws_url)?;
+        require_url_scheme(
+            "binance.spot_ws_url",
+            &self.binance.spot_ws_url,
+            "wss://",
+            LOOPBACK_WS_PREFIXES,
+        )?;
 
         if self.binance.recv_window_ms == 0 || self.binance.recv_window_ms > MAX_RECV_WINDOW_MS {
             return Err(Error::InvalidValue {
@@ -261,12 +306,33 @@ impl Config {
         require_non_empty_unique("market.symbols", &self.market.symbols)?;
         require_non_empty_unique("market.streams", &self.market.streams)?;
 
-        if !(MIN_STALENESS_MS..=MAX_STALENESS_MS).contains(&self.market.staleness_ms) {
+        require_range(
+            "market.staleness_ms",
+            self.market.staleness_ms,
+            MIN_STALENESS_MS,
+            MAX_STALENESS_MS,
+        )?;
+
+        require_range(
+            "filters.refresh_interval_ms",
+            self.filters.refresh_interval_ms,
+            MIN_REFRESH_INTERVAL_MS,
+            MAX_REFRESH_INTERVAL_MS,
+        )?;
+        require_range(
+            "filters.max_age_ms",
+            self.filters.max_age_ms,
+            MIN_REFRESH_INTERVAL_MS,
+            MAX_FILTER_AGE_MS,
+        )?;
+        if self.filters.max_age_ms <= self.filters.refresh_interval_ms {
             return Err(Error::InvalidValue {
-                field: "market.staleness_ms",
+                field: "filters.max_age_ms",
                 reason: format!(
-                    "must be between {MIN_STALENESS_MS} and {MAX_STALENESS_MS}, got {}",
-                    self.market.staleness_ms
+                    "must be greater than filters.refresh_interval_ms ({}), got {}. \
+                     A book that goes stale before it can be refreshed is one the bot \
+                     would refuse to trade on the moment it started",
+                    self.filters.refresh_interval_ms, self.filters.max_age_ms
                 ),
             });
         }
@@ -317,30 +383,42 @@ where
     Ok(())
 }
 
-/// The market WebSocket URL must be `wss://`, or a plaintext loopback address.
-///
-/// See [`LOOPBACK_PREFIXES`] for why that second case exists and why it is not
-/// load-bearing for safety.
-fn require_ws_scheme(field: &'static str, value: &str) -> Result<(), Error> {
-    if value.starts_with("wss://") || LOOPBACK_PREFIXES.iter().any(|p| value.starts_with(p)) {
-        return Ok(());
-    }
-    Err(Error::InvalidValue {
-        field,
-        reason: format!(
-            "must start with `wss://` (or `ws://` on a loopback address, for local \
-             end-to-end tests), got `{value}`"
-        ),
-    })
-}
-
-fn require_scheme(field: &'static str, value: &str, scheme: &str) -> Result<(), Error> {
-    if value.starts_with(scheme) {
+fn require_range(field: &'static str, value: u64, min: u64, max: u64) -> Result<(), Error> {
+    if (min..=max).contains(&value) {
         Ok(())
     } else {
         Err(Error::InvalidValue {
             field,
-            reason: format!("must start with `{scheme}`, got `{value}`"),
+            reason: format!("must be between {min} and {max}, got {value}"),
         })
     }
+}
+
+/// An endpoint URL must use its secure scheme, or be a plaintext loopback
+/// address.
+///
+/// See [`LOOPBACK_WS_PREFIXES`] for why that second case exists and why it is
+/// not load-bearing for safety: `exchange::require_class_for` is the gate, and
+/// it re-parses the URL with a deliberately pedantic authority parser. The check
+/// here only turns a plainly wrong URL into a readable error at load time.
+fn require_url_scheme(
+    field: &'static str,
+    value: &str,
+    secure: &str,
+    loopback: &[&str],
+) -> Result<(), Error> {
+    if value.starts_with(secure) || loopback.iter().any(|p| value.starts_with(p)) {
+        return Ok(());
+    }
+    let plaintext = loopback
+        .first()
+        .and_then(|p| p.split_once("://"))
+        .map_or("plaintext", |(scheme, _)| scheme);
+    Err(Error::InvalidValue {
+        field,
+        reason: format!(
+            "must start with `{secure}` (or `{plaintext}://` on a loopback address, for \
+             local end-to-end tests), got `{value}`"
+        ),
+    })
 }

@@ -25,6 +25,18 @@ streams       = ["book_ticker", "trade"]
 # subscribed stream is already well past anomalous.
 staleness_ms  = 10000
 
+[filters]
+# Symbol filters are exchange state that changes, so they are refetched rather
+# than cached forever. `exchangeInfo` costs 20 request weight out of 6000 per
+# minute, so five minutes between fetches is nothing; fifteen minutes of maximum
+# age leaves room for two refreshes to fail before the book is refused.
+#
+# max_age_ms MUST be greater than refresh_interval_ms, or the book would be
+# stale before it could be refreshed - a config that can never be fresh refuses
+# to load.
+refresh_interval_ms = 300000
+max_age_ms          = 900000
+
 [recording]
 # Raw inbound payloads plus ingest metadata, as newline-delimited JSON. Enabled
 # by default: capturing the stream is the point of this milestone, and an

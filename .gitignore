@@ -4,5 +4,7 @@
 /recordings
 
 # Local-only agent/planning docs
-/CLAUDE.md
-/milestone-*.md
+CLAUDE.md
+CLAUDE.local.md
+milestone-*.md
+*skeleton*.md
